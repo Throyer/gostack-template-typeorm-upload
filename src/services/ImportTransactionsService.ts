@@ -1,39 +1,55 @@
 import fs from "fs";
 import Transaction from '../models/Transaction';
-import CreateTransactionService, { TransactionForm } from './CreateTransactionService';
+import CreateTransactionService from './CreateTransactionService';
 import AppError from "../errors/AppError";
 
-class ImportTransactionsService {
-  async execute(file: any): Promise<Transaction[]> {
+import csvParse from 'csv-parse';
 
-    if (!file) {
-      throw new AppError("Não foi possivel localizar o arquivo csv.")
-    }
+class ImportTransactionsService {
+  async execute(path: string): Promise<Transaction[]> {
 
     const service = new CreateTransactionService();
 
-    const [, ...lines] = fs.readFileSync(file.path, "utf8")
-      .split(/\r?\n/);
+    const stream = fs.createReadStream(path);
 
-    let transactions: Transaction[] = [];
+    const parser = csvParse({
+      from_line: 2,
+      ltrim: true,
+      rtrim: true,
+    });
 
-    for (const line of lines) {
-      const [title, type, value, category] = line.split(",");
+    const csv = stream.pipe(parser);
+
+    let forms: {
+      title: string;
+      type: 'income' | 'outcome';
+      value: number;
+      category: string;
+    }[] = [];
+
+    csv.on("data", line => {
+      const [title, type, value, category] = line;
       if (title && type && value && category) {
-        const transaction = await service.execute({
-          title: title.trimLeft().trim(),
-          type: type.trimLeft().trim() as "income" | "outcome",
+        const transaction = {
+          title,
+          type,
           value: Number(value),
-          category: category.trimLeft().trim()
-        });
+          category
+        };
 
-        transactions = [...transactions, transaction];
+        forms = [...forms, transaction];
       }
-    }
+    });
 
-    fs.promises.unlink(file.path)
+    await new Promise(resolve => csv.on("end", resolve));
 
-    return transactions;
+    return await new Promise(async (resolve) => {
+      let transactions: Transaction[] = [];
+      for (const form of forms) {
+        transactions = [...transactions, await service.execute(form)]
+      }
+      resolve(transactions);
+    })
   }
 }
 
